@@ -165,6 +165,12 @@ int main(int argc, char *argv[]) {
 
     srand(SEED);
 
+    // Mutexes
+    pthread_mutex_t deck_mutex;
+    pthread_mutex_t chips_mutex;
+    pthread_mutex_t log_mutex;
+    pthread_mutex_t console_mutex;
+
 
     /*
     The main function should create n threads – one for each player.
