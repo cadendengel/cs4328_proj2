@@ -85,7 +85,13 @@ bool GAME_OVER = false;
 
 ofstream LOG_FILE;
 
+
+class PLAYER;
 vector<PLAYER> PLAYERS;
+
+class DECK_OF_CARDS;
+class BAG_OF_CHIPS;
+
 
 // Mutexes
 pthread_mutex_t DECK_MUTEX;
@@ -197,31 +203,42 @@ public:
     PLAYER(int PLAYER_ID) : PLAYER_ID(PLAYER_ID) {};
 
 
+    // Card number -> string representation
+    string CARD_TO_STRING(int CARD) {
+        string SUITE = "CHSD";
+        string RANK = "A23456789TJQK";
+        return RANK[CARD % 13] + string(1, SUITE[CARD / 13]);
+    }
+
+
     // Wait it to be my turn
     // Eat chips while waiting
     // TODO: output to console and log file
     void WAIT_FOR_TURN() {
-        
-        pthread_mutex_lock(&CHIPS_MUTEX);
+        while (!GAME_OVER) {
+            pthread_mutex_lock(&CHIPS_MUTEX);
 
-        int NUM_CHIPS = rand() % 5 + 1;
+            int NUM_CHIPS = rand() % 5 + 1;
 
-        if (NUM_CHIPS > BAG_OF_CHIPS::GET_NUM_CHIPS()) {
-            BAG_OF_CHIPS::OPEN_NEW_BAG();
-            LOG("PLAYER " + to_string(PLAYER_ID) + ": opened a new bag of chips");
+            if (NUM_CHIPS > BAG_OF_CHIPS::GET_NUM_CHIPS()) {
+                BAG_OF_CHIPS::OPEN_NEW_BAG();
+                LOG("PLAYER " + to_string(PLAYER_ID) + ": opened a new bag of chips");
+            }
+
+            BAG_OF_CHIPS::TAKE_CHIPS(NUM_CHIPS);
+            pthread_mutex_unlock(&CHIPS_MUTEX);
+
+            CHIPS_EATEN += NUM_CHIPS;
+            LOG("PLAYER " + to_string(PLAYER_ID) + ": eats " + to_string(NUM_CHIPS) + " chips");
+
+            pthread_mutex_lock(&TURN_MUTEX);
+            while (CURRENT_TURN != PLAYER_ID && !GAME_OVER) {
+                pthread_cond_wait(&TURN_COND, &TURN_MUTEX);
+            }
+            pthread_mutex_unlock(&TURN_MUTEX);
+
+            break; // Exit the loop if it's my turn
         }
-
-        BAG_OF_CHIPS::TAKE_CHIPS(NUM_CHIPS);
-        pthread_mutex_unlock(&CHIPS_MUTEX);
-
-        CHIPS_EATEN += NUM_CHIPS;
-        LOG("PLAYER " + to_string(PLAYER_ID) + ": eats " + to_string(NUM_CHIPS) + " chips");
-
-        pthread_mutex_lock(&TURN_MUTEX);
-        while (CURRENT_TURN != PLAYER_ID && !GAME_OVER) {
-            pthread_cond_wait(&TURN_COND, &TURN_MUTEX);
-        }
-        pthread_mutex_unlock(&TURN_MUTEX);
     }
 
     // End my turn
@@ -230,7 +247,7 @@ public:
     void END_TURN() {
         pthread_mutex_lock(&TURN_MUTEX);
         CURRENT_TURN = (CURRENT_TURN + 1) % NUM_PLAYERS;
-        pthread_cond_signal(&TURN_COND);
+        pthread_cond_broadcast(&TURN_COND); // Notify all waiting threads
         pthread_mutex_unlock(&TURN_MUTEX);
     }
 
@@ -243,7 +260,7 @@ public:
             GAME_OVER = true;
         } else {
             // End the round
-            LOG("PLAYER " + to_string(PLAYER_ID) + ":  Round " + to_string(CURRENT_ROUND) + " ends");
+            LOG("PLAYER " + to_string(PLAYER_ID) + ":  Round " + to_string(CURRENT_ROUND) + " ends. The greasy card was " + CARD_TO_STRING(GREASY_CARD) + ".\n");
             CURRENT_ROUND++;
         }
 
@@ -258,80 +275,77 @@ public:
 
     // TODO: output to console and log file
     void PLAY_ROUND() {
-        if (GAME_OVER) {
-            return;
-        }
+        while (!GAME_OVER) {
+            // Check if I am the dealer
+            if (PLAYER_ID == CURRENT_ROUND) {
+                // I am the dealer, so I need to shuffle the deck and draw a greasy card
+                pthread_mutex_lock(&DECK_MUTEX);
+                DECK_OF_CARDS::SHUFFLE_DECK();
+                GREASY_CARD = DECK_OF_CARDS::DEAL_TOP_CARD();
 
-        // Check if I am the dealer
-        if (PLAYER_ID == CURRENT_ROUND) {
-            // I am the dealer, so I need to shuffle the deck and draw a greasy card
-            pthread_mutex_lock(&DECK_MUTEX);
-            DECK_OF_CARDS::SHUFFLE_DECK();
-            GREASY_CARD = DECK_OF_CARDS::DEAL_TOP_CARD();
+                LOG("PLAYER " + to_string(PLAYER_ID) + ": shuffles the deck and the greasy card is " + CARD_TO_STRING(GREASY_CARD));
 
-            LOG("PLAYER " + to_string(PLAYER_ID) + ": shuffles the deck and the greasy card is " + to_string(GREASY_CARD));
-
-            if (CURRENT_ROUND == 0) {
-                // Deal cards to all players
-                for (int i = 0; i < NUM_PLAYERS; i++) {
-                    // Send players their cards
-                    int TEMP_CARD = DECK_OF_CARDS::DEAL_TOP_CARD();
-                    PLAYERS[i].CURRENT_CARD = TEMP_CARD;
+                if (CURRENT_ROUND == 0) {
+                    // Deal cards to all players
+                    for (int i = 0; i < NUM_PLAYERS; i++) {
+                        // Send players their cards
+                        int TEMP_CARD = DECK_OF_CARDS::DEAL_TOP_CARD();
+                        PLAYERS[i].CURRENT_CARD = TEMP_CARD;
+                    }
                 }
+
+                pthread_mutex_unlock(&DECK_MUTEX);
             }
 
-            pthread_mutex_unlock(&DECK_MUTEX);
-        }
+            WAIT_FOR_TURN();
+            
+            // Its my turn, so I need to draw a card from the deck
+            pthread_mutex_lock(&DECK_MUTEX);
+            int TEMP_CARD = DECK_OF_CARDS::DEAL_TOP_CARD();
+            LOG("PLAYER " + to_string(PLAYER_ID) + ": hand " + CARD_TO_STRING(CURRENT_CARD));
+            LOG("PLAYER " + to_string(PLAYER_ID) + ": draws " + CARD_TO_STRING(TEMP_CARD));
 
-        WAIT_FOR_TURN();
-        
-        // Its my turn, so I need to draw a card from the deck
-        pthread_mutex_lock(&DECK_MUTEX);
-        int TEMP_CARD = DECK_OF_CARDS::DEAL_TOP_CARD();
-        LOG("PLAYER " + to_string(PLAYER_ID) + ": hand " + to_string(CURRENT_CARD));
-        LOG("PLAYER " + to_string(PLAYER_ID) + ": draws " + to_string(TEMP_CARD));
+            if (TEMP_CARD % 4 == GREASY_CARD % 4 || CURRENT_CARD % 4 == GREASY_CARD % 4) {
+                // I win this round
+                NUM_WINS++;
+                LOG("PLAYER " + to_string(PLAYER_ID) + ": wins round " + to_string(CURRENT_ROUND + 1));
+                // Choose one of my cards to discard
+                if (rand() % 2 == 0) {
+                    DECK_OF_CARDS::DISCARD(CURRENT_CARD);
+                    LOG("PLAYER " + to_string(PLAYER_ID) + ": discards " + CARD_TO_STRING(CURRENT_CARD) + " at random");
+                    CURRENT_CARD = TEMP_CARD;
+                } else {
+                    LOG("PLAYER " + to_string(PLAYER_ID) + ": discards " + CARD_TO_STRING(TEMP_CARD) + " at random");
+                    DECK_OF_CARDS::DISCARD(TEMP_CARD);
+                }
+                pthread_mutex_unlock(&DECK_MUTEX);
 
-        if (TEMP_CARD % 4 == GREASY_CARD % 4 || CURRENT_CARD % 4 == GREASY_CARD % 4) {
-            // I win this round
-            NUM_WINS++;
-            LOG("PLAYER " + to_string(PLAYER_ID) + ": wins round " + to_string(CURRENT_ROUND + 1));
+                // End the round (or game if this is the last round)
+                END_ROUND();
+            }
+
+
+            // I do not win this round
             // Choose one of my cards to discard
             if (rand() % 2 == 0) {
                 DECK_OF_CARDS::DISCARD(CURRENT_CARD);
-                LOG("PLAYER " + to_string(PLAYER_ID) + ": discards " + to_string(CURRENT_CARD) + " at random");
+                LOG("PLAYER " + to_string(PLAYER_ID) + ": discards " + CARD_TO_STRING(CURRENT_CARD) + " at random");
                 CURRENT_CARD = TEMP_CARD;
             } else {
-                LOG("PLAYER " + to_string(PLAYER_ID) + ": discards " + to_string(TEMP_CARD) + " at random");
+                LOG("PLAYER " + to_string(PLAYER_ID) + ": discards " + CARD_TO_STRING(TEMP_CARD) + " at random");
                 DECK_OF_CARDS::DISCARD(TEMP_CARD);
             }
+
             pthread_mutex_unlock(&DECK_MUTEX);
 
-            // End the round (or game if this is the last round)
-            END_ROUND();
+            // If I am the last player/dealer, I need to end the round
+            if (PLAYER_ID == CURRENT_ROUND) {
+                END_ROUND();
+            }
+            
+            // Goto the next player
+            END_TURN();
         }
-
-
-        // I do not win this round
-        // Choose one of my cards to discard
-        if (rand() % 2 == 0) {
-            DECK_OF_CARDS::DISCARD(CURRENT_CARD);
-            LOG("PLAYER " + to_string(PLAYER_ID) + ": discards " + to_string(CURRENT_CARD) + " at random");
-            CURRENT_CARD = TEMP_CARD;
-        } else {
-            LOG("PLAYER " + to_string(PLAYER_ID) + ": discards " + to_string(TEMP_CARD) + " at random");
-            DECK_OF_CARDS::DISCARD(TEMP_CARD);
-        }
-
-        pthread_mutex_unlock(&DECK_MUTEX);
-
-        // If I am the last player/dealer, I need to end the round
-        if (PLAYER_ID == CURRENT_ROUND) {
-            END_ROUND();
-        }
-        
-        // Goto the next player
-        END_TURN();
-
 
     }
 };
@@ -342,7 +356,8 @@ public:
 
 
 
-
+vector<int> DECK_OF_CARDS::DECK;
+int BAG_OF_CHIPS::NUM_CHIPS = 0;
 
 int main(int argc, char *argv[]) {
     if (argc != 4) {
@@ -356,11 +371,12 @@ int main(int argc, char *argv[]) {
 
     srand(SEED);
 
-    LOG_FILE.open("log.txt", ios::out | ios::app);
+    LOG_FILE.open("log.txt", ios::out);
     if (!LOG_FILE.is_open()) {
         cout << "Error opening log file" << endl;
         return -1;
     }
+    
 
     DECK_OF_CARDS::INIT_DECK();
     BAG_OF_CHIPS::INIT_BAG_OF_CHIPS();
@@ -382,9 +398,9 @@ int main(int argc, char *argv[]) {
     vector<pthread_t> PLAYER_THREADS(NUM_PLAYERS);
     for (int i = 0; i < NUM_PLAYERS; i++) {
         pthread_create(&PLAYER_THREADS[i], NULL, [](void *arg) -> void * {
-            PLAYER *player = (PLAYER *)arg;
+            PLAYER *P = (PLAYER *)arg;
             while (!GAME_OVER) {
-                player->PLAY_ROUND();
+                P->PLAY_ROUND();
             }
             return NULL;
         }, (void *)&PLAYERS[i]);
