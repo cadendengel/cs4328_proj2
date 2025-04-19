@@ -81,6 +81,7 @@ int GREASY_CARD = 0;
 int CURRENT_ROUND = 0;
 int CURRENT_TURN = 0;
 int TOTAL_CHIPS_EATEN = 0;
+int SYNC_COMPLETE_PLAYERS = 0;
 
 bool ROUND_COMPLETE = false;
 
@@ -100,10 +101,12 @@ pthread_mutex_t CHIPS_MUTEX;
 pthread_mutex_t LOG_MUTEX;
 pthread_mutex_t CONSOLE_MUTEX;
 pthread_mutex_t TURN_MUTEX;
+pthread_mutex_t ROUND_SYNC_MUTEX;
 
 // Condition variables
 pthread_cond_t TURN_COND;
 pthread_cond_t ROUND_COND;
+pthread_cond_t ROUND_SYNC_COND;
 
 void LOG(const string &message) {
     pthread_mutex_lock(&LOG_MUTEX);
@@ -233,6 +236,13 @@ public:
             pthread_mutex_lock(&TURN_MUTEX);
             // Ensure only the correct dealer resets the round
             if (ROUND_COMPLETE && PLAYER_ID == CURRENT_ROUND % NUM_PLAYERS) { // Dealer resets the round
+                pthread_mutex_lock(&ROUND_SYNC_MUTEX);
+                while (SYNC_COMPLETE_PLAYERS < NUM_PLAYERS) {
+                    pthread_cond_wait(&ROUND_SYNC_COND, &ROUND_SYNC_MUTEX);
+                }
+                SYNC_COMPLETE_PLAYERS = 0; // Reset the sync counter
+                pthread_mutex_unlock(&ROUND_SYNC_MUTEX);
+
                 LOG("\nDEALER: PLAYER " + to_string(PLAYER_ID + 1));
                 LOG("\nCURRENT_ROUND: " + to_string(CURRENT_ROUND + 1) + " < NUM_PLAYERS: " + to_string(NUM_PLAYERS) + " ? ==> " + to_string(CURRENT_ROUND < NUM_PLAYERS));
                 ROUND_COMPLETE = false; // Reset the round flag
@@ -347,6 +357,21 @@ public:
                 // Wait for the next round to start
                 // How would I do this? I need to wait for the dealer to reset the round
             }
+
+            // Signal that the player has finished their actions for the round
+            pthread_mutex_lock(&ROUND_SYNC_MUTEX);
+            SYNC_COMPLETE_PLAYERS++;
+            if (SYNC_COMPLETE_PLAYERS == NUM_PLAYERS) {
+                pthread_cond_signal(&ROUND_SYNC_COND); // Notify the dealer
+            }
+            pthread_mutex_unlock(&ROUND_SYNC_MUTEX);
+
+            // Wait for the next round to start
+            pthread_mutex_lock(&TURN_MUTEX);
+            while (ROUND_COMPLETE) {
+                pthread_cond_wait(&ROUND_COND, &TURN_MUTEX);
+            }
+            pthread_mutex_unlock(&TURN_MUTEX);
         }
     }
 };
@@ -386,10 +411,12 @@ int main(int argc, char *argv[]) {
     pthread_mutex_init(&DECK_MUTEX, NULL);
     pthread_mutex_init(&CHIPS_MUTEX, NULL);
     pthread_mutex_init(&TURN_MUTEX, NULL);
-    pthread_cond_init(&TURN_COND, NULL);
-    pthread_cond_init(&ROUND_COND, NULL);
     pthread_mutex_init(&LOG_MUTEX, NULL);
     pthread_mutex_init(&CONSOLE_MUTEX, NULL);
+    pthread_mutex_init(&ROUND_SYNC_MUTEX, NULL);
+    pthread_cond_init(&TURN_COND, NULL);
+    pthread_cond_init(&ROUND_COND, NULL);
+    pthread_cond_init(&ROUND_SYNC_COND, NULL);
 
     // Initialize players
     for (int i = 0; i < NUM_PLAYERS; i++) {
@@ -423,10 +450,12 @@ int main(int argc, char *argv[]) {
     pthread_mutex_destroy(&DECK_MUTEX);
     pthread_mutex_destroy(&CHIPS_MUTEX);    
     pthread_mutex_destroy(&TURN_MUTEX);
-    pthread_cond_destroy(&TURN_COND);
-    pthread_cond_destroy(&ROUND_COND);
     pthread_mutex_destroy(&LOG_MUTEX);
     pthread_mutex_destroy(&CONSOLE_MUTEX);
+    pthread_mutex_destroy(&ROUND_SYNC_MUTEX);
+    pthread_cond_destroy(&TURN_COND);
+    pthread_cond_destroy(&ROUND_COND);
+    pthread_cond_destroy(&ROUND_SYNC_COND);
 
     
 
